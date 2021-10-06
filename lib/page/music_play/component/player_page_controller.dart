@@ -2,7 +2,6 @@ import 'package:flutter/material.dart';
 import 'package:just_audio/just_audio.dart';
 import 'package:provider/provider.dart';
 import 'package:tuple/tuple.dart';
-import 'package:yunshu_music/provider/music_data_model.dart';
 import 'package:yunshu_music/provider/play_status_model.dart';
 
 class PlayerPageController extends StatelessWidget {
@@ -18,7 +17,8 @@ class PlayerPageController extends StatelessWidget {
           iconSize: 35,
           icon: const Icon(Icons.skip_previous_outlined),
           onPressed: () {
-            Provider.of<MusicDataModel>(context, listen: false).toPrevious();
+            Provider.of<PlayStatusModel>(context, listen: false)
+                .seekToPrevious();
           },
         ),
         Selector<PlayStatusModel, Tuple2<bool, ProcessingState>>(
@@ -66,7 +66,7 @@ class PlayerPageController extends StatelessWidget {
           color: Colors.white,
           iconSize: 35,
           onPressed: () {
-            Provider.of<MusicDataModel>(context, listen: false).toNext();
+            Provider.of<PlayStatusModel>(context, listen: false).seekToNext();
           },
         ),
       ],

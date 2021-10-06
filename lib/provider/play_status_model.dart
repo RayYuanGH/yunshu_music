@@ -1,5 +1,3 @@
-import 'dart:io';
-
 import 'package:flutter/material.dart';
 import 'package:fluttertoast/fluttertoast.dart';
 import 'package:just_audio/just_audio.dart';
@@ -50,6 +48,7 @@ class PlayStatusModel extends ChangeNotifier {
       _player.processingState != ProcessingState.loading;
 
   PlayStatusModel() : _player = AudioPlayer(userAgent: 'YunShuMusic') {
+    // 缓冲进度
     _player.bufferedPositionStream.listen((event) {
       _bufferedPosition = event;
       notifyListeners();
@@ -58,15 +57,13 @@ class PlayStatusModel extends ChangeNotifier {
       LogHelper.get().debug('音频持续时间 $event');
       _duration = event ?? const Duration();
     });
-    // _player.playbackEventStream.listen((event) {
-    //   LogHelper.get().debug('playbackEventStream $event');
-    // });
     _player.volumeStream.listen((event) {
       LogHelper.get().debug('音量 $event');
     });
     _player.speedStream.listen((event) {
       LogHelper.get().debug('速度 $event');
     });
+    // 播放位置
     _player.positionStream.listen((event) {
       _position = event;
       notifyListeners();
@@ -82,9 +79,16 @@ class PlayStatusModel extends ChangeNotifier {
     _player.processingStateStream.listen((event) {
       LogHelper.get().debug('状态改变 $event');
       notifyListeners();
-      if (event == ProcessingState.completed) {
-        MusicDataModel.get().toNext();
-      }
+    });
+    _player.currentIndexStream.listen((event) {
+      LogHelper.get().debug('索引改变 $event');
+      MusicDataModel.get().onIndexChange(event);
+    });
+    _player.loopModeStream.listen((event) {
+      LogHelper.get().debug('loopModeStream $event');
+    });
+    _player.shuffleModeEnabledStream.listen((event) {
+      LogHelper.get().debug('shuffleModeEnabledStream $event');
     });
   }
 
@@ -96,44 +100,98 @@ class PlayStatusModel extends ChangeNotifier {
   }
 
   /// 手动更新播放进度
-  Future<void> seek(Duration? position) async {
-    await _player.seek(position);
+  Future<void> seek(Duration? position, {int? index}) async {
+    _player.seek(position, index: index);
+  }
+
+  Future<void> seekToPrevious() async {
+    if (MusicDataModel.get().playMode == 'loop') {
+      int index = MusicDataModel.get().nowMusicIndex;
+      if (index - 1 < 0) {
+        index = MusicDataModel.get().musicList.length - 1;
+      } else {
+        index -= 1;
+      }
+      _player.seek(null, index: index);
+      return;
+    }
+    await _player.seekToPrevious();
+    if (!isPlayNow) {
+      _player.play();
+    }
+  }
+
+  Future<void> seekToNext() async {
+    if (MusicDataModel.get().playMode == 'loop') {
+      int index = MusicDataModel.get().nowMusicIndex;
+      List<MusicDataContent> musicList = MusicDataModel.get().musicList;
+      if (index + 1 >= musicList.length) {
+        index = 0;
+      } else {
+        index += 1;
+      }
+      _player.seek(null, index: index);
+      return;
+    }
+    await _player.seekToNext();
+    if (!isPlayNow) {
+      _player.play();
+    }
+  }
+
+  Future<void> setPlayMode(String playMode) async {
+    switch (playMode) {
+      case 'sequence':
+        _player.setLoopMode(LoopMode.all);
+        break;
+      case 'randomly':
+        _player.setShuffleModeEnabled(true);
+        break;
+      case 'loop':
+        _player.setLoopMode(LoopMode.one);
+        break;
+      default:
+        _player.setLoopMode(LoopMode.all);
+        break;
+    }
+  }
+
+  final ConcatenatingAudioSource _concatenatingAudioSource =
+      ConcatenatingAudioSource(children: []);
+
+  Future<void> clearAll() async {
+    _concatenatingAudioSource.clear();
   }
 
   /// 设置音频源
-  Future<void> setSource(MusicDataContent music) async {
-    if (music.musicId == null) {
-      LogHelper.get().error('music.musicId==null');
-      Fluttertoast.showToast(msg: "播放失败", toastLength: Toast.LENGTH_LONG);
-      return;
-    }
-    try {
+  Future<void> setSource(List<MusicDataContent> musics, int initIndex) async {
+    bool enableMusicCache = CacheModel.get().enableMusicCache;
+    List<AudioSource> children = [];
+    for (var music in musics) {
       String musicUrl = HttpHelper.get().getMusicUrl(music.musicId!);
-      File coverFromCache = await CacheModel.get().getCover(music.musicId!);
-      if (!coverFromCache.existsSync()) {
-        // 使用默认的
-        coverFromCache = await CacheModel.get().getDefaultCover();
-      }
+      Uri coverUri = Uri.parse(HttpHelper.get().getCoverUrl(music.musicId!));
       MediaItem mediaItem = MediaItem(
         id: music.musicId!,
         artist: music.singer ?? '',
         title: music.name ?? '',
-        artUri: Uri.file(coverFromCache.path),
+        artUri: coverUri,
       );
-      Duration? duration;
-      if (CacheModel.get().enableMusicCache) {
-        LogHelper.get().debug('使用缓存源：${music.musicId}');
-        LockCachingAudioSource lockCachingAudioSource =
+      AudioSource audioSource;
+      if (enableMusicCache) {
+        audioSource =
             LockCachingAudioSource(Uri.parse(musicUrl), tag: mediaItem);
-        duration = await _player.setAudioSource(lockCachingAudioSource);
       } else {
-        UriAudioSource audioSource = AudioSource.uri(
+        audioSource = AudioSource.uri(
           Uri.parse(musicUrl),
           tag: mediaItem,
         );
-        duration = await _player.setAudioSource(audioSource);
       }
-      LogHelper.get().debug('播放时长：$duration');
+      children.add(audioSource);
+    }
+    _concatenatingAudioSource.addAll(children);
+    try {
+      _player.setAudioSource(_concatenatingAudioSource,
+          initialIndex: initIndex);
     } on PlayerException catch (e) {
       Fluttertoast.showToast(msg: "播放失败", toastLength: Toast.LENGTH_LONG);
       LogHelper.get().error('设置音频源失败', e);
@@ -150,7 +208,7 @@ class PlayStatusModel extends ChangeNotifier {
 
   /// 设置播放状态
   Future<void> setPlay(bool needPlay) async {
-    needPlay ? await _player.play() : await _player.pause();
+    needPlay ? _player.play() : _player.pause();
   }
 
   /// 停止播放

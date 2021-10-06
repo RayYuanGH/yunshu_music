@@ -114,6 +114,10 @@ class HttpHelper {
     return response.data;
   }
 
+  String getCoverUrl(String musicId) {
+    return '$baseUrl/file/cover?id=$musicId';
+  }
+
   String getMusicUrl(String musicId) {
     return "$baseUrl/file?id=$musicId";
   }

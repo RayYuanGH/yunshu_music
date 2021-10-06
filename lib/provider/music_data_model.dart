@@ -1,5 +1,4 @@
 import 'dart:io';
-import 'dart:math';
 import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
@@ -12,12 +11,11 @@ import 'package:yunshu_music/net/model/music_entity.dart';
 import 'package:yunshu_music/net/model/music_meta_info_entity.dart';
 import 'package:yunshu_music/provider/cache_model.dart';
 import 'package:yunshu_music/provider/play_status_model.dart';
-import 'package:yunshu_music/util/common_utils.dart';
 
 /// 音乐数据模型
 class MusicDataModel extends ChangeNotifier {
   static const String _playModeKey = "PLAY_MODE";
-  static const String _nowPlayIndexKey = "NOW_PLAY_INDEX";
+  static const String _nowPlayMusicIdKey = "NOW_PLAY_MUSIC_ID";
 
   static MusicDataModel? _instance;
 
@@ -30,20 +28,11 @@ class MusicDataModel extends ChangeNotifier {
 
   late SharedPreferences _sharedPreferences;
 
-  /// 正在播放的列表
-  final List<MusicDataContent> _playList = [];
-
   /// 所有音乐列表
   List<MusicDataContent> _musicList = [];
 
-  /// 随机过的音乐集合
-  final Set<MusicDataContent> _randomPlayedSet = {};
-
-  /// 正在播放的音乐在_playList里的索引
-  int _nowPlayIndex = 0;
-
   /// 正在播放的音乐在_musicList里的索引
-  int _nowMusicIndex = 0;
+  int _nowPlayMusicIndex = 0;
 
   /// 当前歌曲的歌词信息
   List<Lyric>? _lyricList;
@@ -53,6 +42,9 @@ class MusicDataModel extends ChangeNotifier {
 
   /// 播放模式
   String _playMode = 'sequence';
+
+  /// 现在正在播放的音乐ID
+  String? _nowPlayMusicId;
 
   /// 获取音乐列表
   List<MusicDataContent> get musicList => _musicList;
@@ -64,18 +56,23 @@ class MusicDataModel extends ChangeNotifier {
   Uint8List? get coverBase64 => _coverBase64;
 
   /// 获取正在播放的音乐在_musicList里的索引
-  int get nowMusicIndex => _nowMusicIndex;
+  int get nowMusicIndex => _nowPlayMusicIndex;
 
   /// 获取播放模式
   String get playMode => _playMode;
 
-  /// 刷新音乐列表
+  Future<void> init(SharedPreferences sharedPreferences) async {
+    _sharedPreferences = sharedPreferences;
+    _playMode = sharedPreferences.getString(_playModeKey) ?? 'sequence';
+    _nowPlayMusicId = sharedPreferences.getString(_nowPlayMusicIdKey);
+  }
+
   Future<String?> refreshMusicList({bool needInit = false}) async {
     if (needInit) {
       List<MusicDataContent> list = await CacheModel.get().getMusicList();
       if (list.isNotEmpty) {
         _musicList = list;
-        await _initPlay();
+        _initPlay();
         notifyListeners();
         return null;
       }
@@ -94,15 +91,47 @@ class MusicDataModel extends ChangeNotifier {
     _musicList = responseEntity.body!.data!.content!;
     CacheModel.get().cacheMusicList(_musicList);
     if (needInit) {
-      await _initPlay();
+      _initPlay();
     }
     notifyListeners();
   }
 
-  Future<void> init(SharedPreferences sharedPreferences) async {
-    _sharedPreferences = sharedPreferences;
-    _playMode = sharedPreferences.getString(_playModeKey) ?? 'sequence';
-    _nowPlayIndex = sharedPreferences.getInt(_nowPlayIndexKey) ?? 0;
+  Future<void> _initPlay() async {
+    if (_isInit) {
+      return;
+    }
+    _isInit = false;
+    if (_nowPlayMusicId == null) {
+      _nowPlayMusicId ??= _musicList[0].musicId;
+      _nowPlayMusicIndex = 0;
+    } else {
+      int index = _musicList
+          .indexWhere((element) => element.musicId == _nowPlayMusicId);
+      _nowPlayMusicIndex = index;
+      if (_nowPlayMusicIndex == -1) {
+        _nowPlayMusicId ??= _musicList[0].musicId;
+        _nowPlayMusicIndex = 0;
+      }
+    }
+    PlayStatusModel.get().setSource(_musicList, _nowPlayMusicIndex);
+    PlayStatusModel.get().setPlayMode(_playMode);
+  }
+
+  Future<void> onIndexChange(int? index) async {
+    if (null == index) {
+      return;
+    }
+    _nowPlayMusicIndex = index;
+    MusicDataContent music = _musicList[_nowPlayMusicIndex];
+    _nowPlayMusicId = music.musicId;
+    _sharedPreferences.setString(_nowPlayMusicIdKey, _nowPlayMusicId!);
+    if (null != music.musicId) {
+      await _initCover(_nowPlayMusicId!);
+    }
+    if (null != music.lyricId) {
+      await _initLyric(music.lyricId!);
+    }
+    notifyListeners();
   }
 
   Future<void> nextPlayMode() async {
@@ -111,21 +140,25 @@ class MusicDataModel extends ChangeNotifier {
       case 'sequence':
         _playMode = 'randomly';
         sharedPreferences.setString(_playModeKey, _playMode);
+        PlayStatusModel.get().setPlayMode(_playMode);
         notifyListeners();
         break;
       case 'randomly':
         _playMode = 'loop';
         sharedPreferences.setString(_playModeKey, _playMode);
+        PlayStatusModel.get().setPlayMode(_playMode);
         notifyListeners();
         break;
       case 'loop':
         _playMode = 'sequence';
         sharedPreferences.setString(_playModeKey, _playMode);
+        PlayStatusModel.get().setPlayMode(_playMode);
         notifyListeners();
         break;
       default:
         _playMode = 'sequence';
         sharedPreferences.setString(_playModeKey, _playMode);
+        PlayStatusModel.get().setPlayMode(_playMode);
         notifyListeners();
         break;
     }
@@ -154,10 +187,10 @@ class MusicDataModel extends ChangeNotifier {
 
   /// 获取现在正在播放的音乐信息
   MusicDataContent? getNowPlayMusic() {
-    if (_playList.isEmpty) {
+    if (_musicList.isEmpty) {
       return null;
     } else {
-      return _playList[_nowPlayIndex];
+      return _musicList[_nowPlayMusicIndex];
     }
   }
 
@@ -170,7 +203,7 @@ class MusicDataModel extends ChangeNotifier {
     if (-1 == index) {
       return;
     }
-    await setNowPlayMusic(index);
+    setNowPlayMusic(index);
   }
 
   /// 设置现在正在播放的音乐信息
@@ -178,131 +211,21 @@ class MusicDataModel extends ChangeNotifier {
     if (index > _musicList.length - 1) {
       return;
     }
-    if (_nowMusicIndex == index) {
+    if (_nowPlayMusicIndex == index) {
       if (!PlayStatusModel.get().isPlayNow) {
-        await PlayStatusModel.get().setPlay(true);
-        notifyListeners();
+        PlayStatusModel.get().setPlay(true);
       }
       return;
     }
-    MusicDataContent music = _musicList[index];
-    // 检查播放列表有没有这首歌，有的话直接将播放
-    for (int i = 0; i < _playList.length; i++) {
-      if (music.musicId == _playList[i].musicId) {
-        _nowPlayIndex = i;
-        _sharedPreferences.setInt(_nowPlayIndexKey, _nowPlayIndex);
-        await doPlay();
-        return;
-      }
-    }
-    _playList.add(music);
-    CacheModel.get().cachePlayListAddOne(music);
-    _nowPlayIndex = _playList.length - 1;
-    _sharedPreferences.setInt(_nowPlayIndexKey, _nowPlayIndex);
-    await doPlay();
-  }
-
-  /// 初始化播放信息，这时候没播放但是应该让用户知道播放哪首歌
-  Future<void> _initPlay() async {
-    if (_isInit) {
-      return;
-    }
-    _isInit = true;
-    List<MusicDataContent> playListFromCache =
-        await CacheModel.get().getPlayList();
-    if (playListFromCache.isNotEmpty &&
-        playListFromCache.length > _nowPlayIndex) {
-      // 移除在所有音乐列表中不存在的历史播放歌曲，初始化完成后调用
-      MusicDataContent music = playListFromCache[_nowPlayIndex];
-      Set<String> musicIdSet = _musicList
-          .map((element) => element.musicId ?? '')
-          .where((element) => element != '')
-          .toSet();
-      playListFromCache
-          .removeWhere((element) => !musicIdSet.contains(element.musicId));
-      if (playListFromCache.isNotEmpty) {
-        if (!playListFromCache.contains(music)) {
-          _nowPlayIndex = 0;
-          _sharedPreferences.setInt(_nowPlayIndexKey, _nowPlayIndex);
-          music = playListFromCache[_nowPlayIndex];
-        }
-        _playList.clear();
-        _playList.addAll(playListFromCache);
-        if (null != music.lyricId) {
-          await _initLyric(music.lyricId!);
-        }
-        if (null != music.musicId) {
-          _nowMusicIndex = _musicList
-              .indexWhere((element) => element.musicId == music.musicId);
-          await _initCover(music.musicId!);
-          await PlayStatusModel.get().setSource(music);
-        }
-        return;
-      }
-    }
-
-    _nowPlayIndex = 0;
-    _sharedPreferences.setInt(_nowPlayIndexKey, _nowPlayIndex);
-    MusicDataContent music = _musicList[_nowPlayIndex];
-    _playList.add(music);
-    CacheModel.get().cachePlayListAddOne(music);
-    if (null != music.lyricId) {
-      await _initLyric(music.lyricId!);
-    }
-    if (null != music.musicId) {
-      _nowMusicIndex =
-          _musicList.indexWhere((element) => element.musicId == music.musicId);
-      await _initCover(music.musicId!);
-      await PlayStatusModel.get().setSource(music);
-    }
-  }
-
-  Future<void> doPlay() async {
     await PlayStatusModel.get().setPlay(false);
     await PlayStatusModel.get().stopPlay();
-    if (_playList.isEmpty) {
-      return;
-    }
-    if (_playList.length < _nowPlayIndex + 1) {
-      return;
-    }
-    MusicDataContent music = _playList[_nowPlayIndex];
-    if (null != music.musicId) {
-      _nowMusicIndex =
-          _musicList.indexWhere((element) => element.musicId == music.musicId);
-      await _initCover(music.musicId!);
-      if (null != music.lyricId) {
-        await _initLyric(music.lyricId!);
-      }
-      await PlayStatusModel.get().setSource(music);
-      await PlayStatusModel.get().setPlay(true);
-      notifyListeners();
-    }
-  }
-
-  /// 上一曲
-  Future<void> toPrevious() async {
-    if (_musicList.isEmpty) {
-      return;
-    }
-    MusicDataContent? previousMusic = _getPreviousMusic();
-    if (null == previousMusic) {
-      return;
-    }
-    await doPlay();
-  }
-
-  /// 下一曲
-  Future<void> toNext() async {
-    if (_musicList.isEmpty) {
-      return;
-    }
-    MusicDataContent? nextMusic = _getNextMusic();
-    if (null == nextMusic) {
-      LogHelper.get().warn('下一曲为空');
-      return;
-    }
-    await doPlay();
+    _nowPlayMusicIndex = index;
+    MusicDataContent music = _musicList[_nowPlayMusicIndex];
+    _nowPlayMusicId = music.musicId;
+    _sharedPreferences.setString(_nowPlayMusicIdKey, _nowPlayMusicId!);
+    PlayStatusModel.get().seek(null, index: index);
+    PlayStatusModel.get().setPlay(true);
+    notifyListeners();
   }
 
   Future<void> _initLyric(String lyricId) async {
@@ -362,124 +285,5 @@ class MusicDataModel extends ChangeNotifier {
         ? await defaultCoverFile.readAsBytes()
         : await coverFile.readAsBytes();
     notifyListeners();
-  }
-
-  /// 上一曲
-  MusicDataContent? _getPreviousMusic() {
-    // 如果播放列表为空则获取一首歌曲
-    if (_playList.isEmpty) {
-      MusicDataContent? music = _getSongs();
-      if (null == music) {
-        return null;
-      }
-      _playList.insert(0, music);
-      _nowPlayIndex = 0;
-      _sharedPreferences.setInt(_nowPlayIndexKey, _nowPlayIndex);
-      CacheModel.get().cachePlayList(_playList);
-      return music;
-    } else {
-      // 播放列表不是空的，尝试索引位置-1
-      if (_nowPlayIndex - 1 < 0) {
-        // 说明是上一首歌不存在了，获取一首
-        MusicDataContent? music = _getSongs();
-        if (null == music) {
-          return null;
-        }
-        _playList.insert(0, music);
-        _nowPlayIndex = 0;
-        _sharedPreferences.setInt(_nowPlayIndexKey, _nowPlayIndex);
-        CacheModel.get().cachePlayList(_playList);
-        return music;
-      } else {
-        _nowPlayIndex -= 1;
-        _sharedPreferences.setInt(_nowPlayIndexKey, _nowPlayIndex);
-        return _playList[_nowPlayIndex];
-      }
-    }
-  }
-
-  /// 下一曲
-  MusicDataContent? _getNextMusic() {
-    // 播放列表是空的：用户没播放过歌曲
-    if (_playList.isEmpty) {
-      MusicDataContent? music = _getSongs();
-      if (null == music) {
-        return null;
-      }
-      _playList.add(music);
-      _nowPlayIndex = 0;
-      _sharedPreferences.setInt(_nowPlayIndexKey, _nowPlayIndex);
-      CacheModel.get().cachePlayListAddOne(music);
-      return music;
-    } else {
-      // 播放列表不是空的，尝试索引位置+1
-      if (_playList.length <= _nowPlayIndex + 1) {
-        // 说明播放到播放列表中最后一首歌了，需要获取下一首
-        MusicDataContent? music = _getSongs();
-        if (null == music) {
-          return null;
-        }
-        _playList.add(music);
-        _nowPlayIndex = _playList.length - 1;
-        _sharedPreferences.setInt(_nowPlayIndexKey, _nowPlayIndex);
-        CacheModel.get().cachePlayListAddOne(music);
-        return music;
-      } else {
-        // 不是最后一首，索引+1返回
-        _nowPlayIndex += 1;
-        _sharedPreferences.setInt(_nowPlayIndexKey, _nowPlayIndex);
-        return _playList[_nowPlayIndex];
-      }
-    }
-  }
-
-  /// 获取一首
-  MusicDataContent? _getSongs({bool noLoop = false}) {
-    switch (_playMode) {
-      case 'sequence':
-        return _getSongsSequence();
-      case 'randomly':
-        return _getSongsRandomly();
-      case 'loop':
-        return noLoop ? _getSongsSequence() : _getSongsLoop();
-      default:
-        return _getSongsSequence();
-    }
-  }
-
-  /// 随机获取一首
-  MusicDataContent? _getSongsRandomly() {
-    if (_musicList.isEmpty) {
-      return null;
-    }
-    List<MusicDataContent> canPlayList =
-        _musicList.where((music) => !_randomPlayedSet.contains(music)).toList();
-    if (canPlayList.isEmpty) {
-      _randomPlayedSet.clear();
-      canPlayList = _musicList;
-    }
-    int index = Random().nextInt(canPlayList.length);
-    MusicDataContent randomlyMusic = canPlayList[index];
-    _randomPlayedSet.add(randomlyMusic);
-    return randomlyMusic;
-  }
-
-  /// 顺序获取一首
-  MusicDataContent? _getSongsSequence() {
-    if (_musicList.isEmpty) {
-      return null;
-    }
-    if (musicList.length <= nowMusicIndex + 1) {
-      nowMusicIndex == -1;
-    }
-    return _musicList[++_nowMusicIndex];
-  }
-
-  /// 循环获取一首
-  MusicDataContent? _getSongsLoop() {
-    if (_musicList.isEmpty) {
-      return null;
-    }
-    return _musicList[_nowMusicIndex];
   }
 }
