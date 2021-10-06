@@ -1,9 +1,12 @@
 import 'dart:convert';
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:crypto/crypto.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:fluttertoast/fluttertoast.dart';
+import 'package:mime_type/mime_type.dart';
 import 'package:path/path.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -187,43 +190,144 @@ class CacheModel extends ChangeNotifier {
     return list[0]['data']?.toString();
   }
 
-  Future<int> cacheCover(String musicId, String? base64) async {
-    if (!_enableCoverCache) {
-      return 0;
-    }
-    LogHelper.get().info('start cache cover');
-    if (base64 == null || base64 == '') {
-      return 0;
-    }
-    return await _database.transaction((txn) async {
-      await txn
-          .rawDelete('DELETE FROM cover_cache where musicId = ?', [musicId]);
-      return await txn.rawInsert(
-          'INSERT INTO cover_cache (musicId,base64) VALUES ("$musicId","$base64");');
-    });
-  }
-
-  Future<String?> getCover(String musicId) async {
-    if (!_enableCoverCache) {
+  Future<File?> cacheCover(
+      String musicId, String? encodedStr, String? mimeType) async {
+    if (null == encodedStr) {
       return null;
     }
-    LogHelper.get().info('get cover from cache $musicId');
-    List<Map<String, Object?>> list = await _database
-        .rawQuery('select * from cover_cache where musicId = "$musicId";');
-    if (list.isEmpty) {
-      return null;
+    String ext =
+        mimeType == null ? 'png' : extensionFromMime(mimeType) ?? 'png';
+    if (ext == 'jpe') {
+      ext = 'jpg';
     }
-    return list[0]['base64']?.toString();
+    File extFile = File(joinAll([
+      (Directory(join((await getTemporaryDirectory()).path, 'cover_ext_cache')))
+          .path,
+      musicId
+    ]));
+    File cacheFile = File(joinAll([
+      (Directory(join((await getTemporaryDirectory()).path, 'cover_cache')))
+          .path,
+      musicId + "." + ext
+    ]));
+    Uint8List bytes = base64.decode(encodedStr);
+    if (!extFile.existsSync()) {
+      extFile = await extFile.create(recursive: true);
+    }
+    if (!cacheFile.existsSync()) {
+      cacheFile = await cacheFile.create(recursive: true);
+    }
+    await extFile.writeAsString(ext);
+    await cacheFile.writeAsBytes(bytes);
+    return cacheFile;
   }
 
-  Future<int> deleteCover(String musicId) async {
+  Future<File> getCover(String musicId) async {
+    File extFile = File(joinAll([
+      (Directory(join((await getTemporaryDirectory()).path, 'cover_ext_cache')))
+          .path,
+      musicId
+    ]));
+    String ext = 'png';
+    if (extFile.existsSync()) {
+      ext = await extFile.readAsString();
+    }
+    if (ext.trim() == '') {
+      ext = 'png';
+    }
+    File cacheFile = File(joinAll([
+      (Directory(join((await getTemporaryDirectory()).path, 'cover_cache')))
+          .path,
+      musicId + "." + ext
+    ]));
+    return cacheFile;
+  }
+
+  Future<File> getDefaultCover() async {
+    File defaultCoverFile = File(joinAll([
+      (Directory(
+              join((await getApplicationDocumentsDirectory()).path, 'cover')))
+          .path,
+      "default_cover.jpg"
+    ]));
+    if (!defaultCoverFile.existsSync()) {
+      defaultCoverFile = await defaultCoverFile.create(recursive: true);
+      ByteData data = await rootBundle.load("asserts/images/default_cover.jpg");
+      List<int> bytes =
+          data.buffer.asUint8List(data.offsetInBytes, data.lengthInBytes);
+      await defaultCoverFile.writeAsBytes(bytes);
+    }
+    return defaultCoverFile;
+  }
+
+  Future<bool> deleteCover(String musicId) async {
     LogHelper.get().info('start delete cache cover $musicId');
     if (musicId == '') {
-      return 0;
+      return false;
     }
-    return await _database
-        .rawDelete('delete from cover_cache where musicId = ?', [musicId]);
+    File extFile = File(joinAll([
+      (Directory(join((await getTemporaryDirectory()).path, 'cover_ext_cache')))
+          .path,
+      musicId
+    ]));
+    if (!extFile.existsSync()) {
+      return false;
+    }
+    String ext = await extFile.readAsString();
+    if (ext.trim() == '') {
+      ext = 'png';
+    }
+    File cacheFile = File(joinAll([
+      (Directory(join((await getTemporaryDirectory()).path, 'cover_cache')))
+          .path,
+      musicId + "." + ext
+    ]));
+    if (cacheFile.existsSync()) {
+      await cacheFile.delete();
+      await extFile.delete();
+      return true;
+    }
+    await extFile.delete();
+    return false;
   }
+
+  // Future<int> cacheCover(String musicId, String? base64) async {
+  //   if (!_enableCoverCache) {
+  //     return 0;
+  //   }
+  //   LogHelper.get().info('start cache cover');
+  //   if (base64 == null || base64 == '') {
+  //     return 0;
+  //   }
+  //   return await _database.transaction((txn) async {
+  //     await txn
+  //         .rawDelete('DELETE FROM cover_cache where musicId = ?', [musicId]);
+  //     return await txn.rawInsert(
+  //         'INSERT INTO cover_cache (musicId,base64) VALUES ("$musicId","$base64");');
+  //   });
+  // }
+
+//   Future<String?> getCover(String musicId) async {
+//     if (!_enableCoverCache) {
+//       return null;
+//     }
+//     LogHelper.get().info('get cover from cache $musicId');
+//     List<Map<String, Object?>> list = await _database
+//         .rawQuery('select * from cover_cache where musicId = "$musicId";');
+//     if (list.isEmpty) {
+//       return null;
+//     }
+//     return list[0]['base64']?.toString();
+//   }
+
+  // Future<int> deleteCover(String musicId) async {
+  //   LogHelper.get().info('start delete cache cover $musicId');
+  //   if (musicId == '') {
+  //     return 0;
+  //   }
+  //   return await _database
+  //       .rawDelete('delete from cover_cache where musicId = ?', [musicId]);
+  // }
 
   Future<bool> deleteMusicCacheByMusicId(String musicId) async {
     Uri uri = Uri.parse(HttpHelper.get().getMusicUrl(musicId));

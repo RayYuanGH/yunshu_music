@@ -1,11 +1,12 @@
+import 'dart:io';
 import 'dart:math';
+import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_rest_template/response_entity.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:yunshu_music/component/lyric/lyric.dart';
 import 'package:yunshu_music/component/lyric/lyric_util.dart';
-import 'package:yunshu_music/method_channel/play_status_channel.dart';
 import 'package:yunshu_music/net/http_helper.dart';
 import 'package:yunshu_music/net/model/music_entity.dart';
 import 'package:yunshu_music/net/model/music_meta_info_entity.dart';
@@ -48,7 +49,7 @@ class MusicDataModel extends ChangeNotifier {
   List<Lyric>? _lyricList;
 
   /// 音乐封面
-  String? _coverBase64;
+  Uint8List? _coverBase64;
 
   /// 播放模式
   String _playMode = 'sequence';
@@ -60,7 +61,7 @@ class MusicDataModel extends ChangeNotifier {
   List<Lyric>? get lyricList => _lyricList;
 
   /// 获取音乐封面
-  String? get coverBase64 => _coverBase64;
+  Uint8List? get coverBase64 => _coverBase64;
 
   /// 获取正在播放的音乐在_musicList里的索引
   int get nowMusicIndex => _nowMusicIndex;
@@ -234,10 +235,7 @@ class MusicDataModel extends ChangeNotifier {
           _nowMusicIndex = _musicList
               .indexWhere((element) => element.musicId == music.musicId);
           await _initCover(music.musicId!);
-          await PlayStatusChannel.get().setNowPlayMusicInfo(
-              name: music.name, singer: music.singer, cover: _coverBase64);
-          await PlayStatusModel.get()
-              .setSource(HttpHelper.get().getMusicUrl(music.musicId!));
+          await PlayStatusModel.get().setSource(music);
         }
         return;
       }
@@ -255,10 +253,7 @@ class MusicDataModel extends ChangeNotifier {
       _nowMusicIndex =
           _musicList.indexWhere((element) => element.musicId == music.musicId);
       await _initCover(music.musicId!);
-      await PlayStatusChannel.get().setNowPlayMusicInfo(
-          name: music.name, singer: music.singer, cover: _coverBase64);
-      await PlayStatusModel.get()
-          .setSource(HttpHelper.get().getMusicUrl(music.musicId!));
+      await PlayStatusModel.get().setSource(music);
     }
   }
 
@@ -279,10 +274,7 @@ class MusicDataModel extends ChangeNotifier {
       if (null != music.lyricId) {
         await _initLyric(music.lyricId!);
       }
-      await PlayStatusChannel.get().setNowPlayMusicInfo(
-          name: music.name, singer: music.singer, cover: _coverBase64);
-      await PlayStatusModel.get()
-          .setSource(HttpHelper.get().getMusicUrl(music.musicId!));
+      await PlayStatusModel.get().setSource(music);
       await PlayStatusModel.get().setPlay(true);
       notifyListeners();
     }
@@ -325,38 +317,50 @@ class MusicDataModel extends ChangeNotifier {
   }
 
   Future<void> _initCover(String musicId) async {
-    String? coverFromCache = await CacheModel.get().getCover(musicId);
-    if (null != coverFromCache) {
-      _coverBase64 = coverFromCache;
+    File coverFromCache = await CacheModel.get().getCover(musicId);
+    if (coverFromCache.existsSync()) {
+      _coverBase64 = await coverFromCache.readAsBytes();
       notifyListeners();
       return;
     }
     ResponseEntity<MusicMetaInfoEntity> responseEntity =
         await HttpHelper.get().getMetaInfo(musicId);
     if (responseEntity.status.value != 200) {
-      _coverBase64 = null;
+      File defaultCoverFile = await CacheModel.get().getDefaultCover();
+      _coverBase64 = await defaultCoverFile.readAsBytes();
+      notifyListeners();
       return;
     }
 
     if (responseEntity.body == null || responseEntity.body!.data == null) {
-      _coverBase64 = null;
+      File defaultCoverFile = await CacheModel.get().getDefaultCover();
+      _coverBase64 = await defaultCoverFile.readAsBytes();
+      notifyListeners();
       return;
     }
 
     if (responseEntity.body!.data!.coverPictures == null) {
-      _coverBase64 = null;
+      File defaultCoverFile = await CacheModel.get().getDefaultCover();
+      _coverBase64 = await defaultCoverFile.readAsBytes();
+      notifyListeners();
       return;
     }
 
     if (responseEntity.body!.data!.coverPictures!.isEmpty) {
-      _coverBase64 = null;
+      File defaultCoverFile = await CacheModel.get().getDefaultCover();
+      _coverBase64 = await defaultCoverFile.readAsBytes();
+      notifyListeners();
       return;
     }
 
     MusicMetaInfoDataCoverPictures pictures =
         responseEntity.body!.data!.coverPictures![0];
-    _coverBase64 = pictures.base64;
-    CacheModel.get().cacheCover(musicId, _coverBase64);
+    File? coverFile = await CacheModel.get()
+        .cacheCover(musicId, pictures.base64, pictures.mimeType);
+    File defaultCoverFile = await CacheModel.get().getDefaultCover();
+    _coverBase64 = coverFile == null
+        ? await defaultCoverFile.readAsBytes()
+        : await coverFile.readAsBytes();
     notifyListeners();
   }
 

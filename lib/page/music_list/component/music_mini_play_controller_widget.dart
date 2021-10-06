@@ -1,4 +1,4 @@
-import 'dart:convert';
+import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 import 'package:just_audio/just_audio.dart';
@@ -40,7 +40,7 @@ class MusicMiniPlayControllerWidget extends StatelessWidget {
                 children: [
                   Padding(
                     padding: const EdgeInsets.only(left: 16.0, right: 16.0),
-                    child: Selector<MusicDataModel, String?>(
+                    child: Selector<MusicDataModel, Uint8List?>(
                       selector: (_, model) => model.coverBase64,
                       builder: (_, value, __) {
                         if (value == null) {
@@ -53,7 +53,7 @@ class MusicMiniPlayControllerWidget extends StatelessWidget {
                           );
                         } else {
                           return RotateCoverImageWidget(
-                            image: Image.memory(base64Decode(value)).image,
+                            image: Image.memory(value).image,
                             width: 52,
                             height: 52,
                             duration: const Duration(seconds: 20),

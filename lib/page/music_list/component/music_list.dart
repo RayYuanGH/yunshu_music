@@ -173,7 +173,7 @@ class _InnerListItem extends StatelessWidget {
                         showDeleteConfirmDialog(context).then((value) {
                           if (value ?? false) {
                             CacheModel.get().deleteCover(musicId).then((value) {
-                              if (value > 0) {
+                              if (value) {
                                 Fluttertoast.showToast(msg: "删除封面缓存成功");
                               } else {
                                 Fluttertoast.showToast(msg: "缓存不存在");

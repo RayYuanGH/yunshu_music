@@ -1,7 +1,11 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 import 'package:fluttertoast/fluttertoast.dart';
 import 'package:just_audio/just_audio.dart';
-import 'package:yunshu_music/method_channel/play_status_channel.dart';
+import 'package:just_audio_background/just_audio_background.dart';
+import 'package:yunshu_music/net/http_helper.dart';
+import 'package:yunshu_music/net/model/music_entity.dart';
 import 'package:yunshu_music/provider/cache_model.dart';
 import 'package:yunshu_music/provider/music_data_model.dart';
 import 'package:yunshu_music/util/common_utils.dart';
@@ -73,14 +77,6 @@ class PlayStatusModel extends ChangeNotifier {
     });
     _player.playerStateStream.listen((event) {
       LogHelper.get().debug('播放状态 $event');
-      if (_player.playing &&
-          event.processingState != ProcessingState.completed &&
-          event.processingState != ProcessingState.idle &&
-          event.processingState != ProcessingState.loading) {
-        PlayStatusChannel.get().setNowPlayMusicInfo(play: true);
-      } else {
-        PlayStatusChannel.get().setNowPlayMusicInfo(play: false);
-      }
       notifyListeners();
     });
     _player.processingStateStream.listen((event) {
@@ -105,16 +101,37 @@ class PlayStatusModel extends ChangeNotifier {
   }
 
   /// 设置音频源
-  Future<void> setSource(String url) async {
+  Future<void> setSource(MusicDataContent music) async {
+    if (music.musicId == null) {
+      LogHelper.get().error('music.musicId==null');
+      Fluttertoast.showToast(msg: "播放失败", toastLength: Toast.LENGTH_LONG);
+      return;
+    }
     try {
+      String musicUrl = HttpHelper.get().getMusicUrl(music.musicId!);
+      File coverFromCache = await CacheModel.get().getCover(music.musicId!);
+      if (!coverFromCache.existsSync()) {
+        // 使用默认的
+        coverFromCache = await CacheModel.get().getDefaultCover();
+      }
+      MediaItem mediaItem = MediaItem(
+        id: music.musicId!,
+        artist: music.singer ?? '',
+        title: music.name ?? '',
+        artUri: Uri.file(coverFromCache.path),
+      );
       Duration? duration;
       if (CacheModel.get().enableMusicCache) {
-        LogHelper.get().debug('使用缓存源：$url');
+        LogHelper.get().debug('使用缓存源：${music.musicId}');
         LockCachingAudioSource lockCachingAudioSource =
-            LockCachingAudioSource(Uri.parse(url));
+            LockCachingAudioSource(Uri.parse(musicUrl), tag: mediaItem);
         duration = await _player.setAudioSource(lockCachingAudioSource);
       } else {
-        duration = await _player.setUrl(url);
+        UriAudioSource audioSource = AudioSource.uri(
+          Uri.parse(musicUrl),
+          tag: mediaItem,
+        );
+        duration = await _player.setAudioSource(audioSource);
       }
       LogHelper.get().debug('播放时长：$duration');
     } on PlayerException catch (e) {
